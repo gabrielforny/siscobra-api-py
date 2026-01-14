@@ -678,13 +678,12 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
 
     elements = []
 
+    # Cabeçalho fixo
     elements.append(Paragraph(EMPRESA_NOME, title))
     elements.append(Paragraph(EMPRESA_ENDERECO, normal))
     elements.append(Paragraph(EMPRESA_CNPJ + " " * 6 + EMPRESA_CONTATO, normal))
     elements.append(Spacer(1, 10))
 
-    elements.append(Paragraph("<b>Proposta de Acordo</b>", styles["Heading3"]))
-    elements.append(Spacer(1, 6))
 
     hoje_str = date.today().strftime("%d/%m/%y")
     cpf_fmt = "-" if not somente_digitos(proposta.cpf_cnpj) else formatar_cpf_cnpj(proposta.cpf_cnpj)
@@ -709,14 +708,15 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
     elements.append(Paragraph(f"<b>Data Cálculo:</b> {proposta.data_calculo}", label))
     elements.append(Spacer(1, 10))
 
-    header = ["Contrato", "Vencimento", "Atraso", "Principal", "Correção", "Juros", "Multa", "Total"]
+    header = ["Contrato", "Vencimento", "Atraso", "Principal", "Correção", "Juros", "Multa", "Honorários", "Total"]
     data = [header]
 
-    # Totais continuam contando TUDO (inclui as linhas 0) -> MAS visualmente não imprime as linhas 0
+    # Totais
     tot_principal = Decimal("0")
     tot_correcao = Decimal("0")
     tot_juros = Decimal("0")
     tot_multa = Decimal("0")
+    tot_ho = Decimal("0")
     tot_total = Decimal("0")
 
     for p in proposta.parcelas:
@@ -724,15 +724,16 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
         tot_correcao += p.correcao
         tot_juros += p.juros
         tot_multa += p.multa
+        tot_ho += p.ho
         tot_total += p.total
 
-        # REGRA NOVA:
-        # Se todas as colunas forem 0, não imprime a linha no PDF.
+        # ✅ Atualizado: se tudo for 0 (incluindo HO), não imprime a linha
         if (
             p.principal.quantize(Decimal("0.01")) == ZERO and
             p.correcao.quantize(Decimal("0.01")) == ZERO and
             p.juros.quantize(Decimal("0.01")) == ZERO and
             p.multa.quantize(Decimal("0.01")) == ZERO and
+            p.ho.quantize(Decimal("0.01")) == ZERO and
             p.total.quantize(Decimal("0.01")) == ZERO
         ):
             continue
@@ -745,15 +746,18 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
             br_money(p.correcao),
             br_money(p.juros),
             br_money(p.multa),
+            br_money(p.ho),
             br_money(p.total),
         ])
 
+    # Linha total com a nova coluna
     data.append([
         "Total", "", "",
         br_money(tot_principal),
         br_money(tot_correcao),
         br_money(tot_juros),
         br_money(tot_multa),
+        br_money(tot_ho),
         br_money(tot_total),
     ])
 
@@ -764,8 +768,11 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.8),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+
+        # Alinhamento: primeiras 3 colunas à esquerda, valores à direita
         ("ALIGN", (0, 0), (2, -1), "LEFT"),
         ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("BACKGROUND", (0, -1), (-1, -1), colors.whitesmoke),
     ]))
