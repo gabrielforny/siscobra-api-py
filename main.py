@@ -913,7 +913,7 @@ def executar_robo(on_progress: Optional[callable] = None):
                 datas_dt = [datetime.strptime(d, "%d/%m/%Y").date() for d in datas_venc]
                 primeira = min(datas_dt).strftime("%d/%m/%Y")
                 ultima = max(datas_dt).strftime("%d/%m/%Y")
-                vencimentos_str = f"{primeira} a {ultima}"
+                vencimentos_str = f"'{primeira} a {ultima}"
             except Exception:
                 vencimentos_str = ""
 
