@@ -154,7 +154,6 @@ def solicitar_continuar():
 
 def solicitar_encerrar():
     STOP_EVENT.set()
-    # libera pause caso esteja pausado, para poder encerrar
     PAUSE_EVENT.set()
 
 def resetar_controles_execucao():
@@ -307,6 +306,17 @@ def sufixo_contrato(contrato: str) -> str:
     if "-" not in c:
         return ""
     return c.split("-", 1)[1].strip()
+
+def parcela_zerada(p: ParcelaResumo) -> bool:
+    """Mesma regra do PDF: se tudo for 0, não conta nem imprime."""
+    return (
+        p.principal.quantize(Decimal("0.01")) == ZERO and
+        p.correcao.quantize(Decimal("0.01")) == ZERO and
+        p.juros.quantize(Decimal("0.01")) == ZERO and
+        p.multa.quantize(Decimal("0.01")) == ZERO and
+        p.ho.quantize(Decimal("0.01")) == ZERO and
+        p.total.quantize(Decimal("0.01")) == ZERO
+    )
 
 # --------- valor por extenso ---------
 UNIDADES = ("zero","um","dois","três","quatro","cinco","seis","sete","oito","nove")
@@ -491,6 +501,52 @@ def upload_pdf_para_drive(drive_service, caminho_pdf: str, nome_arquivo: str) ->
     return file.get("webViewLink", "")
 
 # ==========================================================
+# FIX: COLUNA P COMO TEXTO (BLINDA O SHEETS)
+# ==========================================================
+
+def garantir_coluna_p_como_texto(sheets_service):
+    """
+    Força a coluna P (VENCIMENTOS) a ser TEXT no Google Sheets,
+    evitando conversões automáticas.
+    """
+    meta = sheets_service.spreadsheets().get(
+        spreadsheetId=SPREADSHEET_ID,
+        fields="sheets(properties(sheetId,title))"
+    ).execute()
+
+    sheet_id = None
+    for s in meta.get("sheets", []):
+        props = s.get("properties", {})
+        if props.get("title") == SHEET_NAME:
+            sheet_id = props.get("sheetId")
+            break
+
+    if sheet_id is None:
+        raise ValueError(f"Aba não encontrada: {SHEET_NAME}")
+
+    requests_body = [{
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,        # a partir da linha 2 (0-based)
+                "startColumnIndex": 15,    # P
+                "endColumnIndex": 16       # até P
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": {"type": "TEXT"}
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat"
+        }
+    }]
+
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"requests": requests_body}
+    ).execute()
+
+# ==========================================================
 # SOAP
 # ==========================================================
 
@@ -647,7 +703,6 @@ def montar_nome_pdf(proposta: PropostaAcordo, contrato: str) -> str:
     Exigência:
     - base: "PLANILHA - <Condomínio>"
     - se contrato tiver sufixo após '-', acrescenta: "-<sufixo>"
-      Ex: "PLANILHA - Parque Rainha Silvia-AP203BL11.pdf"
     """
     cond = (proposta.condominio or "").strip()
     base = f"PLANILHA - {cond}".strip(" -")
@@ -684,7 +739,6 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
     elements.append(Paragraph(EMPRESA_CNPJ + " " * 6 + EMPRESA_CONTATO, normal))
     elements.append(Spacer(1, 10))
 
-
     hoje_str = date.today().strftime("%d/%m/%y")
     cpf_fmt = "-" if not somente_digitos(proposta.cpf_cnpj) else formatar_cpf_cnpj(proposta.cpf_cnpj)
 
@@ -711,7 +765,6 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
     header = ["Contrato", "Vencimento", "Atraso", "Principal", "Correção", "Juros", "Multa", "Honorários", "Total"]
     data = [header]
 
-    # Totais
     tot_principal = Decimal("0")
     tot_correcao = Decimal("0")
     tot_juros = Decimal("0")
@@ -727,15 +780,7 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
         tot_ho += p.ho
         tot_total += p.total
 
-        # ✅ Atualizado: se tudo for 0 (incluindo HO), não imprime a linha
-        if (
-            p.principal.quantize(Decimal("0.01")) == ZERO and
-            p.correcao.quantize(Decimal("0.01")) == ZERO and
-            p.juros.quantize(Decimal("0.01")) == ZERO and
-            p.multa.quantize(Decimal("0.01")) == ZERO and
-            p.ho.quantize(Decimal("0.01")) == ZERO and
-            p.total.quantize(Decimal("0.01")) == ZERO
-        ):
+        if parcela_zerada(p):
             continue
 
         data.append([
@@ -750,7 +795,6 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
             br_money(p.total),
         ])
 
-    # Linha total com a nova coluna
     data.append([
         "Total", "", "",
         br_money(tot_principal),
@@ -768,11 +812,8 @@ def gerar_pdf_proposta(proposta: PropostaAcordo, caminho_pdf: str) -> Decimal:
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.8),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-
-        # Alinhamento: primeiras 3 colunas à esquerda, valores à direita
         ("ALIGN", (0, 0), (2, -1), "LEFT"),
         ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
-
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("BACKGROUND", (0, -1), (-1, -1), colors.whitesmoke),
     ]))
@@ -821,7 +862,6 @@ def executar_robo(on_progress: Optional[callable] = None):
 
     resetar_controles_execucao()
 
-    # carrega ids antes de tudo
     carregar_ids_para_globais()
 
     log_info("Iniciando execução do robô")
@@ -839,6 +879,10 @@ def executar_robo(on_progress: Optional[callable] = None):
     log_info(f"Data de cálculo usada: {data_calc}")
 
     sheets_service, drive_service = criar_servicos_google()
+
+    # ✅ BLINDA a coluna P
+    garantir_coluna_p_como_texto(sheets_service)
+
     linhas_pendentes = ler_linhas_pendentes(sheets_service)
 
     PROGRESS["total"] = len(linhas_pendentes)
@@ -850,7 +894,6 @@ def executar_robo(on_progress: Optional[callable] = None):
         PROGRESS["running"] = False
         return
 
-    # se já pediram stop antes de iniciar loop
     if not check_pause_stop(on_progress):
         PROGRESS["running"] = False
         PROGRESS["last_message"] = "Encerrado"
@@ -871,13 +914,11 @@ def executar_robo(on_progress: Optional[callable] = None):
                 on_progress()
 
             if not check_pause_stop(on_progress):
-                log_warn("Execução encerrada pelo usuário.")
                 break
 
             xml_inner = chamar_ws_com_retry(TOKEN, data_calc, contrato)
 
             if not check_pause_stop(on_progress):
-                log_warn("Execução encerrada pelo usuário.")
                 break
 
             proposta = extrair_proposta(xml_inner, FORMA_NEGOCIACAO_ALVO, data_calc)
@@ -896,7 +937,6 @@ def executar_robo(on_progress: Optional[callable] = None):
             total_geral = gerar_pdf_proposta(proposta, caminho_pdf)
 
             if not check_pause_stop(on_progress):
-                log_warn("Execução encerrada pelo usuário.")
                 break
 
             link_pdf = upload_pdf_para_drive(drive_service, caminho_pdf, nome_pdf)
@@ -907,23 +947,31 @@ def executar_robo(on_progress: Optional[callable] = None):
             link_cell_value = gsheet_hyperlink(link_pdf, nome_pdf)
             valor_coluna_o = f"{br_money(total_geral)} ({valor_por_extenso_ptbr(total_geral)})"
 
-            datas_venc = [p.vencimento for p in proposta.parcelas if p.vencimento]
+            # ✅ VENCIMENTOS: usa a MESMA REGRA do PDF (ignora parcelas zeradas)
+            datas_venc: List[str] = []
+            for p in proposta.parcelas:
+                if not p.vencimento:
+                    continue
+                if parcela_zerada(p):
+                    continue
+                datas_venc.append(p.vencimento.strip())
+
             vencimentos_str = ""
             try:
                 datas_dt = [datetime.strptime(d, "%d/%m/%Y").date() for d in datas_venc]
                 primeira = min(datas_dt).strftime("%d/%m/%Y")
                 ultima = max(datas_dt).strftime("%d/%m/%Y")
-                vencimentos_str = f"'{primeira} a {ultima}"
+                vencimentos_str = f"'{primeira} a {ultima}"  # texto (não aparece o ')
             except Exception:
                 vencimentos_str = ""
 
-            # REGRA NOVA: nome terceiro em MAIÚSCULO
+            # REGRA: nome terceiro em MAIÚSCULO
             nome_terceiro = (proposta.cliente or "").strip().upper()
             cpf_terceiro = "-" if not cpf_digits else formatar_cpf_cnpj(cpf_planilha_bruto)
 
             atualizar_celula(sheets_service, row_number, "E", link_cell_value, user_entered=True)
             atualizar_celula(sheets_service, row_number, "O", valor_coluna_o)
-            atualizar_celula(sheets_service, row_number, "P", vencimentos_str)
+            atualizar_celula(sheets_service, row_number, "P", vencimentos_str, user_entered=True)  # ✅ importante
             atualizar_celula(sheets_service, row_number, "Q", nome_terceiro)
             atualizar_celula(sheets_service, row_number, "R", cpf_terceiro)
 
@@ -945,7 +993,6 @@ def executar_robo(on_progress: Optional[callable] = None):
                 on_progress()
             continue
 
-    # se foi encerrado, finaliza com status correto
     if STOP_EVENT.is_set():
         limpar_pasta_pdfs_tmp()
         PROGRESS["running"] = False
@@ -1078,7 +1125,6 @@ def criar_ui():
         iniciar_robo_thread(lbl_total, lbl_proc, lbl_err, lbl_msg, botao_iniciar, botao_pausar, botao_encerrar)
 
     def on_click_pausar():
-        # se está rodando (não pausado) => pausa; senão => continua
         if PAUSE_EVENT.is_set():
             solicitar_pausa()
             botao_pausar.config(text="Continuar")

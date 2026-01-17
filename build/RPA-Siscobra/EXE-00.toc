@@ -59,7 +59,7 @@
  [],
  False,
  False,
- 1768566834,
+ 1768613300,
  [('runw',
    '/Users/gabrielfornydesouzamuniz/Documents/projetos/siscobra-api-py/.venv/lib/python3.14/site-packages/PyInstaller/bootloader/Darwin-64bit/runw',
    'EXECUTABLE')],
